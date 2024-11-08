@@ -4,20 +4,33 @@ import "./style.css";
 import "./leafletWorkaround.ts";
 import luck from "./luck.ts";
 
-// Location of our classroom (as identified on Google Maps)
 const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
-
-// Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
 const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 
-// Player inventory
-let playerCoins = 0;
+const playerCoins: Geocoin[] = [];
 let playerPoints = 0;
 
-// Create the map (element with id "map" is defined in index.html)
+const eventDispatcher = new EventTarget();
+
+const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
+updateStatusPanel();
+
+function updateStatusPanel() {
+  const inventoryText = playerCoins
+    .map((coin) => `${coin.latitude}:${coin.longitude}#${coin.serial}`)
+    .join("<br>");
+  const newStatus = `Points: ${playerPoints}<br>Inventory:<br>${inventoryText}`;
+
+  if (statusPanel.innerHTML !== newStatus) {
+    statusPanel.innerHTML = newStatus;
+  }
+}
+
+eventDispatcher.addEventListener("game-state-changed", updateStatusPanel);
+
 const map = leaflet.map(document.getElementById("map")!, {
   center: OAKES_CLASSROOM,
   zoom: GAMEPLAY_ZOOM_LEVEL,
@@ -27,7 +40,6 @@ const map = leaflet.map(document.getElementById("map")!, {
   scrollWheelZoom: false,
 });
 
-// Populate the map with a background tile layer
 leaflet
   .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
@@ -36,97 +48,172 @@ leaflet
   })
   .addTo(map);
 
-// Add a marker to represent the player
 const playerMarker = leaflet.marker(OAKES_CLASSROOM);
 playerMarker.bindTooltip("That's you!");
 playerMarker.addTo(map);
 
-// Display the player's points and coins in the status panel
-const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
-updateStatusPanel();
-
-// Function to update the status panel
-function updateStatusPanel() {
-  statusPanel.innerHTML = `Coins: ${playerCoins} | Points: ${playerPoints}`;
+interface Cell {
+  i: number;
+  j: number;
+  toLatLng(): { latitude: number; longitude: number };
+  toString(): string;
 }
 
-// Add caches to the map by cell numbers
+class ConcreteCell implements Cell {
+  constructor(public i: number, public j: number) {}
+
+  static fromLatLng(lat: number, lng: number): ConcreteCell {
+    const i = Math.floor(lat / TILE_DEGREES);
+    const j = Math.floor(lng / TILE_DEGREES);
+    return new ConcreteCell(i, j);
+  }
+
+  toLatLng(): { latitude: number; longitude: number } {
+    return {
+      latitude: this.i * TILE_DEGREES,
+      longitude: this.j * TILE_DEGREES,
+    };
+  }
+
+  toString(): string {
+    return `${this.i}:${this.j}`;
+  }
+}
+
+interface Geocoin {
+  latitude: number;
+  longitude: number;
+  serial: number;
+  collected: boolean;
+  collect(): void;
+}
+
+class GeocoinFactory {
+  private static coins: { [key: string]: Geocoin[] } = {};
+
+  static create(cell: Cell): Geocoin {
+    const cellKey = cell.toString();
+    const serial = this.coins[cellKey]?.length ?? 0;
+
+    const { latitude, longitude } = cell.toLatLng();
+
+    const geocoin: Geocoin = {
+      latitude,
+      longitude,
+      serial,
+      collected: false,
+      collect: function () {
+        if (!this.collected) {
+          this.collected = true;
+          playerCoins.push(this);
+          playerPoints += 1;
+          eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+        }
+      },
+    };
+
+    if (!this.coins[cellKey]) {
+      this.coins[cellKey] = [];
+    }
+    this.coins[cellKey].push(geocoin);
+    return geocoin;
+  }
+
+  static getCoins(cell: Cell): Geocoin[] {
+    const cellKey = cell.toString();
+    return this.coins[cellKey] || [];
+  }
+
+  static removeCoin(cell: Cell, coin: Geocoin): void {
+    const cellKey = cell.toString();
+    const coinIndex = this.coins[cellKey]?.indexOf(coin);
+    if (coinIndex !== undefined && coinIndex !== -1) {
+      this.coins[cellKey].splice(coinIndex, 1);
+    }
+  }
+
+  static addCoinToCache(cell: Cell, coin: Geocoin): void {
+    const cellKey = cell.toString();
+    if (!this.coins[cellKey]) {
+      this.coins[cellKey] = [];
+    }
+    this.coins[cellKey].push(coin);
+  }
+}
+
+const spawnedCaches = new Set<string>();
+
 function spawnCache(i: number, j: number) {
-  // Convert cell numbers into lat/lng bounds
+  const cell = new ConcreteCell(i, j);
   const origin = OAKES_CLASSROOM;
   const bounds = leaflet.latLngBounds([
     [origin.lat + i * TILE_DEGREES, origin.lng + j * TILE_DEGREES],
     [origin.lat + (i + 1) * TILE_DEGREES, origin.lng + (j + 1) * TILE_DEGREES],
   ]);
 
-  // Add a rectangle to the map to represent the cache
   const rect = leaflet.rectangle(bounds);
   rect.addTo(map);
 
-  // Handle interactions with the cache
   rect.bindPopup(() => {
-    // Each cache has a random point value and coin count
-    let pointValue = Math.floor(luck([i, j, "initialValue"].toString()) * 100);
-    let coinCount = Math.floor(luck([i, j, "coinCount"].toString()) * 10) + 1;
+    const cellKey = cell.toString();
+    if (!spawnedCaches.has(cellKey)) {
+      const coinCount = Math.floor(luck([i, j, "coinCount"].toString()) * 10) +
+        1;
+      for (let c = 0; c < coinCount; c++) {
+        GeocoinFactory.create(cell);
+      }
+      spawnedCaches.add(cellKey);
+      eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+    }
 
-    // The popup offers a description and buttons for collecting and depositing
+    const coins = GeocoinFactory.getCoins(cell);
     const popupDiv = document.createElement("div");
-    popupDiv.innerHTML = `
-                <div>Cache at "${i},${j}". Value: <span id="value">${pointValue}</span>, Coins: <span id="coin-count">${coinCount}</span>.</div>
-                <button id="collect">Collect</button>
-                <button id="deposit">Deposit</button>
-                <button id="poke">Poke</button>`;
+    popupDiv.innerHTML = `<div>Cache at "${cell.toString()}":</div>`;
 
-    const valueElement = popupDiv.querySelector<HTMLSpanElement>("#value")!;
-    const coinCountElement = popupDiv.querySelector<HTMLSpanElement>(
-      "#coin-count",
-    )!;
-    const collectButton = popupDiv.querySelector<HTMLButtonElement>(
-      "#collect",
-    )!;
-    const depositButton = popupDiv.querySelector<HTMLButtonElement>(
-      "#deposit",
-    )!;
-    const pokeButton = popupDiv.querySelector<HTMLButtonElement>("#poke")!;
-
-    // Collect all coins from the cache
-    collectButton.addEventListener("click", () => {
-      if (coinCount > 0) {
-        playerCoins += coinCount;
-        playerPoints += coinCount;
-        coinCount = 0;
-        updateStatusPanel();
-        coinCountElement.innerHTML = coinCount.toString();
+    coins.forEach((coin, index) => {
+      const coinDiv = document.createElement("div");
+      if (!coin.collected) {
+        coinDiv.innerHTML = `
+          <div>(${coin.latitude}:${coin.longitude}#${coin.serial})
+            <button id="collect-${index}">Collect</button>
+          </div>
+        `;
+        const collectButton = coinDiv.querySelector(`#collect-${index}`)!;
+        collectButton.addEventListener("click", () => {
+          coin.collect();
+          coinDiv.innerHTML = ``;
+        });
       }
+      popupDiv.appendChild(coinDiv);
     });
 
-    // Deposit 1 coin into the cache
+    const depositDiv = document.createElement("div");
+    depositDiv.innerHTML = `<button id="deposit">Deposit a coin</button>`;
+    const depositButton = depositDiv.querySelector("#deposit")!;
     depositButton.addEventListener("click", () => {
-      if (playerCoins > 0) {
-        playerCoins--;
-        playerPoints++;
-        coinCount++;
-        updateStatusPanel();
-        coinCountElement.innerHTML = coinCount.toString();
+      if (playerCoins.length > 0) {
+        const depositedCoin = playerCoins.pop()!;
+
+        depositedCoin.collected = false;
+        playerPoints -= 1;
+
+        GeocoinFactory.removeCoin(cell, depositedCoin);
+        GeocoinFactory.addCoinToCache(cell, depositedCoin);
+
+        eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+        rect.openPopup();
+      } else {
+        alert("No coins to deposit!");
       }
     });
-
-    // Increase points through "poke"
-    pokeButton.addEventListener("click", () => {
-      pointValue--;
-      playerPoints++;
-      updateStatusPanel();
-      valueElement.innerHTML = pointValue.toString();
-    });
+    popupDiv.appendChild(depositDiv);
 
     return popupDiv;
   });
 }
 
-// Look around the player's neighborhood for caches to spawn
 for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
   for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
-    // If location i,j is lucky enough, spawn a cache!
     if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
       spawnCache(i, j);
     }
