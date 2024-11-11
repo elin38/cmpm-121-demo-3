@@ -4,20 +4,46 @@ import "./style.css";
 import "./leafletWorkaround.ts";
 import luck from "./luck.ts";
 
+// Constants
 const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
 const GAMEPLAY_ZOOM_LEVEL = 19;
 const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
+const MAX_ZOOM = 19;
 
+// Player state
 const playerCoins: Geocoin[] = [];
 let playerPoints = 0;
 
 const eventDispatcher = new EventTarget();
-
 const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
 updateStatusPanel();
 
+interface Cell {
+  i: number;
+  j: number;
+  toLatLng(): { latitude: number; longitude: number };
+  toString(): string;
+}
+
+interface Geocoin {
+  latitude: number;
+  longitude: number;
+  serial: number;
+  collected: boolean;
+  collect(): void;
+}
+
+interface GeocoinFactory {
+  coins: { [key: string]: Geocoin[] };
+  create(cell: Cell): Geocoin;
+  getCoins(cell: Cell): Geocoin[];
+  removeCoin(cell: Cell, coin: Geocoin): void;
+  addCoinToCache(cell: Cell, coin: Geocoin): void;
+}
+
+// Update the status panel with the latest player state
 function updateStatusPanel() {
   const inventoryText = playerCoins
     .map((coin) => `${coin.latitude}:${coin.longitude}#${coin.serial}`)
@@ -31,6 +57,7 @@ function updateStatusPanel() {
 
 eventDispatcher.addEventListener("game-state-changed", updateStatusPanel);
 
+// Map setup
 const map = leaflet.map(document.getElementById("map")!, {
   center: OAKES_CLASSROOM,
   zoom: GAMEPLAY_ZOOM_LEVEL,
@@ -42,7 +69,7 @@ const map = leaflet.map(document.getElementById("map")!, {
 
 leaflet
   .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
+    maxZoom: MAX_ZOOM,
     attribution:
       '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   })
@@ -52,49 +79,21 @@ const playerMarker = leaflet.marker(OAKES_CLASSROOM);
 playerMarker.bindTooltip("That's you!");
 playerMarker.addTo(map);
 
-interface Cell {
-  i: number;
-  j: number;
-  toLatLng(): { latitude: number; longitude: number };
-  toString(): string;
-}
+// Utility functions to simplify repetitive code
+const createCell = (i: number, j: number): Cell => ({
+  i,
+  j,
+  toLatLng: () => ({ latitude: i * TILE_DEGREES, longitude: j * TILE_DEGREES }),
+  toString: () => `${i}:${j}`,
+});
 
-class ConcreteCell implements Cell {
-  constructor(public i: number, public j: number) {}
+// Geocoin factory object
+const geocoinFactory: GeocoinFactory = {
+  coins: {}, // Initialize coins as an empty object
 
-  static fromLatLng(lat: number, lng: number): ConcreteCell {
-    const i = Math.floor(lat / TILE_DEGREES);
-    const j = Math.floor(lng / TILE_DEGREES);
-    return new ConcreteCell(i, j);
-  }
-
-  toLatLng(): { latitude: number; longitude: number } {
-    return {
-      latitude: this.i * TILE_DEGREES,
-      longitude: this.j * TILE_DEGREES,
-    };
-  }
-
-  toString(): string {
-    return `${this.i}:${this.j}`;
-  }
-}
-
-interface Geocoin {
-  latitude: number;
-  longitude: number;
-  serial: number;
-  collected: boolean;
-  collect(): void;
-}
-
-class GeocoinFactory {
-  private static coins: { [key: string]: Geocoin[] } = {};
-
-  static create(cell: Cell): Geocoin {
+  create(cell: Cell): Geocoin {
     const cellKey = cell.toString();
     const serial = this.coins[cellKey]?.length ?? 0;
-
     const { latitude, longitude } = cell.toLatLng();
 
     const geocoin: Geocoin = {
@@ -117,101 +116,109 @@ class GeocoinFactory {
     }
     this.coins[cellKey].push(geocoin);
     return geocoin;
-  }
+  },
 
-  static getCoins(cell: Cell): Geocoin[] {
-    const cellKey = cell.toString();
-    return this.coins[cellKey] || [];
-  }
+  getCoins(cell: Cell): Geocoin[] {
+    return this.coins[cell.toString()] || [];
+  },
 
-  static removeCoin(cell: Cell, coin: Geocoin): void {
+  removeCoin(cell: Cell, coin: Geocoin): void {
     const cellKey = cell.toString();
     const coinIndex = this.coins[cellKey]?.indexOf(coin);
-    if (coinIndex !== undefined && coinIndex !== -1) {
+    if (coinIndex !== -1) {
       this.coins[cellKey].splice(coinIndex, 1);
     }
-  }
+  },
 
-  static addCoinToCache(cell: Cell, coin: Geocoin): void {
+  addCoinToCache(cell: Cell, coin: Geocoin): void {
     const cellKey = cell.toString();
     if (!this.coins[cellKey]) {
       this.coins[cellKey] = [];
     }
     this.coins[cellKey].push(coin);
-  }
-}
+  },
+};
 
 const spawnedCaches = new Set<string>();
 
+// Function to spawn caches on the map
 function spawnCache(i: number, j: number) {
-  const cell = new ConcreteCell(i, j);
-  const origin = OAKES_CLASSROOM;
-  const bounds = leaflet.latLngBounds([
-    [origin.lat + i * TILE_DEGREES, origin.lng + j * TILE_DEGREES],
-    [origin.lat + (i + 1) * TILE_DEGREES, origin.lng + (j + 1) * TILE_DEGREES],
-  ]);
-
+  const cell = createCell(i, j);
+  const bounds = getCacheBounds(i, j);
   const rect = leaflet.rectangle(bounds);
   rect.addTo(map);
 
-  rect.bindPopup(() => {
-    const cellKey = cell.toString();
-    if (!spawnedCaches.has(cellKey)) {
-      const coinCount = Math.floor(luck([i, j, "coinCount"].toString()) * 10) +
-        1;
-      for (let c = 0; c < coinCount; c++) {
-        GeocoinFactory.create(cell);
-      }
-      spawnedCaches.add(cellKey);
-      eventDispatcher.dispatchEvent(new Event("game-state-changed"));
-    }
-
-    const coins = GeocoinFactory.getCoins(cell);
-    const popupDiv = document.createElement("div");
-    popupDiv.innerHTML = `<div>Cache at "${cell.toString()}":</div>`;
-
-    coins.forEach((coin, index) => {
-      const coinDiv = document.createElement("div");
-      if (!coin.collected) {
-        coinDiv.innerHTML = `
-          <div>(${coin.latitude}:${coin.longitude}#${coin.serial})
-            <button id="collect-${index}">Collect</button>
-          </div>
-        `;
-        const collectButton = coinDiv.querySelector(`#collect-${index}`)!;
-        collectButton.addEventListener("click", () => {
-          coin.collect();
-          coinDiv.innerHTML = ``;
-        });
-      }
-      popupDiv.appendChild(coinDiv);
-    });
-
-    const depositDiv = document.createElement("div");
-    depositDiv.innerHTML = `<button id="deposit">Deposit a coin</button>`;
-    const depositButton = depositDiv.querySelector("#deposit")!;
-    depositButton.addEventListener("click", () => {
-      if (playerCoins.length > 0) {
-        const depositedCoin = playerCoins.pop()!;
-
-        depositedCoin.collected = false;
-        playerPoints -= 1;
-
-        GeocoinFactory.removeCoin(cell, depositedCoin);
-        GeocoinFactory.addCoinToCache(cell, depositedCoin);
-
-        eventDispatcher.dispatchEvent(new Event("game-state-changed"));
-        rect.openPopup();
-      } else {
-        alert("No coins to deposit!");
-      }
-    });
-    popupDiv.appendChild(depositDiv);
-
-    return popupDiv;
-  });
+  rect.bindPopup(() => generatePopupContent(cell, rect));
 }
 
+// Generate bounds for cache based on position
+function getCacheBounds(i: number, j: number) {
+  const origin = OAKES_CLASSROOM;
+  return leaflet.latLngBounds([
+    [origin.lat + i * TILE_DEGREES, origin.lng + j * TILE_DEGREES],
+    [origin.lat + (i + 1) * TILE_DEGREES, origin.lng + (j + 1) * TILE_DEGREES],
+  ]);
+}
+
+// Generate the popup content for a cache
+function generatePopupContent(cell: Cell, rect: leaflet.Rectangle) {
+  const cellKey = cell.toString();
+  if (!spawnedCaches.has(cellKey)) {
+    const coinCount =
+      Math.floor(luck([cell.i, cell.j, "coinCount"].toString()) * 10) + 1;
+    for (let c = 0; c < coinCount; c++) {
+      geocoinFactory.create(cell);
+    }
+    spawnedCaches.add(cellKey);
+    eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+  }
+
+  const coins = geocoinFactory.getCoins(cell);
+  const popupDiv = document.createElement("div");
+  popupDiv.innerHTML = `<div>Cache at "${cell.toString()}":</div>`;
+
+  coins.forEach((coin, index) => {
+    const coinDiv = document.createElement("div");
+    if (!coin.collected) {
+      coinDiv.innerHTML = `
+        <div>(${coin.latitude}:${coin.longitude}#${coin.serial})
+          <button id="collect-${index}">Collect</button>
+        </div>
+      `;
+      const collectButton = coinDiv.querySelector(`#collect-${index}`)!;
+      collectButton.addEventListener("click", () => {
+        coin.collect();
+        coinDiv.innerHTML = ``;
+      });
+    }
+    popupDiv.appendChild(coinDiv);
+  });
+
+  const depositDiv = document.createElement("div");
+  depositDiv.innerHTML = `<button id="deposit">Deposit a coin</button>`;
+  const depositButton = depositDiv.querySelector("#deposit")!;
+  depositButton.addEventListener("click", () => handleCoinDeposit(cell, rect));
+  popupDiv.appendChild(depositDiv);
+
+  return popupDiv;
+}
+
+// Handle coin deposit logic
+function handleCoinDeposit(cell: Cell, rect: leaflet.Rectangle) {
+  if (playerCoins.length > 0) {
+    const depositedCoin = playerCoins.pop()!;
+    depositedCoin.collected = false;
+    playerPoints -= 1;
+    geocoinFactory.removeCoin(cell, depositedCoin);
+    geocoinFactory.addCoinToCache(cell, depositedCoin);
+    eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+    rect.openPopup();
+  } else {
+    alert("No coins to deposit!");
+  }
+}
+
+// Spawn caches around the neighborhood
 for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
   for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
     if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
@@ -220,32 +227,29 @@ for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
   }
 }
 
+// Player movement logic
 let playerPosition = OAKES_CLASSROOM;
 
 function movePlayer(direction: string) {
-  let newLat = playerPosition.lat;
-  let newLng = playerPosition.lng;
+  const movement: { [key: string]: leaflet.LatLng } = {
+    north: leaflet.latLng(
+      playerPosition.lat + TILE_DEGREES,
+      playerPosition.lng,
+    ),
+    south: leaflet.latLng(
+      playerPosition.lat - TILE_DEGREES,
+      playerPosition.lng,
+    ),
+    east: leaflet.latLng(playerPosition.lat, playerPosition.lng + TILE_DEGREES),
+    west: leaflet.latLng(playerPosition.lat, playerPosition.lng - TILE_DEGREES),
+  };
 
-  switch (direction) {
-    case "north":
-      newLat += TILE_DEGREES;
-      break;
-    case "south":
-      newLat -= TILE_DEGREES;
-      break;
-    case "east":
-      newLng += TILE_DEGREES;
-      break;
-    case "west":
-      newLng -= TILE_DEGREES;
-      break;
-  }
-
-  playerPosition = leaflet.latLng(newLat, newLng);
+  playerPosition = movement[direction] || playerPosition;
   playerMarker.setLatLng(playerPosition);
   map.setView(playerPosition);
 }
 
+// Event listeners for movement controls
 document.getElementById("north")?.addEventListener(
   "click",
   () => movePlayer("north"),
