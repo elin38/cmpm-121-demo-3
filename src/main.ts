@@ -7,7 +7,7 @@ import luck from "./luck.ts";
 // Constants
 const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
 const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_DEGREES = 1e-4;
+const TILE_DEGREES = 1e-4; // Smaller step for better precision
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 const MAX_ZOOM = 19;
@@ -46,7 +46,9 @@ interface GeocoinFactory {
 // Update the status panel with the latest player state
 function updateStatusPanel() {
   const inventoryText = playerCoins
-    .map((coin) => `${coin.latitude}:${coin.longitude}#${coin.serial}`)
+    .map((coin) =>
+      `${coin.latitude.toFixed(5)}:${coin.longitude.toFixed(5)}#${coin.serial}`
+    )
     .join("<br>");
   const newStatus = `Points: ${playerPoints}<br>Inventory:<br>${inventoryText}`;
 
@@ -83,7 +85,10 @@ playerMarker.addTo(map);
 const createCell = (i: number, j: number): Cell => ({
   i,
   j,
-  toLatLng: () => ({ latitude: i * TILE_DEGREES, longitude: j * TILE_DEGREES }),
+  toLatLng: () => ({
+    latitude: OAKES_CLASSROOM.lat + i * TILE_DEGREES,
+    longitude: OAKES_CLASSROOM.lng + j * TILE_DEGREES,
+  }),
   toString: () => `${i}:${j}`,
 });
 
@@ -175,13 +180,20 @@ function generatePopupContent(cell: Cell, rect: leaflet.Rectangle) {
 
   const coins = geocoinFactory.getCoins(cell);
   const popupDiv = document.createElement("div");
-  popupDiv.innerHTML = `<div>Cache at "${cell.toString()}":</div>`;
+
+  // Display cache coordinates in the desired format
+  const { latitude, longitude } = cell.toLatLng();
+  popupDiv.innerHTML = `<div>Cache at "${latitude.toFixed(5)}:${
+    longitude.toFixed(5)
+  }"</div>`;
 
   coins.forEach((coin, index) => {
     const coinDiv = document.createElement("div");
     if (!coin.collected) {
       coinDiv.innerHTML = `
-        <div>(${coin.latitude}:${coin.longitude}#${coin.serial})
+        <div>(${coin.latitude.toFixed(5)}:${
+        coin.longitude.toFixed(5)
+      }#${coin.serial})
           <button id="collect-${index}">Collect</button>
         </div>
       `;
@@ -244,25 +256,16 @@ function movePlayer(direction: string) {
     west: leaflet.latLng(playerPosition.lat, playerPosition.lng - TILE_DEGREES),
   };
 
-  playerPosition = movement[direction] || playerPosition;
-  playerMarker.setLatLng(playerPosition);
-  map.setView(playerPosition);
+  if (movement[direction]) {
+    playerPosition = movement[direction];
+    playerMarker.setLatLng(playerPosition);
+    map.panTo(playerPosition);
+  }
 }
 
-// Event listeners for movement controls
-document.getElementById("north")?.addEventListener(
-  "click",
-  () => movePlayer("north"),
-);
-document.getElementById("south")?.addEventListener(
-  "click",
-  () => movePlayer("south"),
-);
-document.getElementById("east")?.addEventListener(
-  "click",
-  () => movePlayer("east"),
-);
-document.getElementById("west")?.addEventListener(
-  "click",
-  () => movePlayer("west"),
-);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowUp") movePlayer("north");
+  else if (event.key === "ArrowDown") movePlayer("south");
+  else if (event.key === "ArrowRight") movePlayer("east");
+  else if (event.key === "ArrowLeft") movePlayer("west");
+});
