@@ -219,3 +219,46 @@ for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
     }
   }
 }
+
+let playerPosition = OAKES_CLASSROOM;
+
+function movePlayer(direction: string) {
+  let newLat = playerPosition.lat;
+  let newLng = playerPosition.lng;
+
+  switch (direction) {
+    case "north":
+      newLat += TILE_DEGREES;
+      break;
+    case "south":
+      newLat -= TILE_DEGREES;
+      break;
+    case "east":
+      newLng += TILE_DEGREES;
+      break;
+    case "west":
+      newLng -= TILE_DEGREES;
+      break;
+  }
+
+  playerPosition = leaflet.latLng(newLat, newLng);
+  playerMarker.setLatLng(playerPosition);
+  map.setView(playerPosition);
+}
+
+document.getElementById("north")?.addEventListener(
+  "click",
+  () => movePlayer("north"),
+);
+document.getElementById("south")?.addEventListener(
+  "click",
+  () => movePlayer("south"),
+);
+document.getElementById("east")?.addEventListener(
+  "click",
+  () => movePlayer("east"),
+);
+document.getElementById("west")?.addEventListener(
+  "click",
+  () => movePlayer("west"),
+);
