@@ -11,10 +11,14 @@ const TILE_DEGREES = 1e-4; // Smaller step for better precision
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 const MAX_ZOOM = 19;
-const playerCoins: Geocoin[] = [];
+let playerCoins: Geocoin[] = [];
+
+const playerMovementHistory: leaflet.LatLng[] = [];
 
 let playerPoints = 0;
 let playerPosition = OAKES_CLASSROOM;
+let isGeolocationActive = false;
+let watchId: number | null = null;
 
 const eventDispatcher = new EventTarget();
 
@@ -23,6 +27,7 @@ const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
 const cacheStateMemento: { [key: string]: CacheMemento } = {};
 
 const spawnedCaches = new Set<string>();
+const sensorButton = document.getElementById("sensor")!;
 
 const map = leaflet.map(document.getElementById("map")!, {
   center: OAKES_CLASSROOM,
@@ -295,6 +300,7 @@ function movePlayer(direction: string) {
     playerMarker.setLatLng(playerPosition);
     map.panTo(playerPosition);
     spawnRelativeCache();
+    updatePlayerMovementHistory(); // Update the movement history
   }
 }
 
@@ -309,5 +315,129 @@ directions.forEach((direction) => {
   );
 });
 
+function updatePlayerPositionFromGeolocation(position: GeolocationPosition) {
+  const { latitude, longitude } = position.coords;
+
+  playerPosition = leaflet.latLng(latitude, longitude);
+  playerMarker.setLatLng(playerPosition);
+  map.panTo(playerPosition);
+
+  spawnRelativeCache();
+}
+
+function startGeolocationTracking() {
+  if (navigator.geolocation) {
+    watchId = navigator.geolocation.watchPosition(
+      updatePlayerPositionFromGeolocation,
+      (error) => {
+        alert(`Geolocation error: ${error.message}`);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 5000,
+      },
+    );
+  } else {
+    alert("Geolocation is not supported by this browser.");
+  }
+}
+
+function stopGeolocationTracking() {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+}
+
+function toggleGeolocationTracking() {
+  if (isGeolocationActive) {
+    stopGeolocationTracking();
+    isGeolocationActive = false;
+    sensorButton.style.backgroundColor = "";
+  } else {
+    startGeolocationTracking();
+    isGeolocationActive = true;
+    sensorButton.style.backgroundColor = "lightgreen";
+  }
+}
+
+function savePlayerState() {
+  const playerState = {
+    position: { lat: playerPosition.lat, lng: playerPosition.lng },
+    coins: playerCoins.map((coin) => ({
+      latitude: coin.latitude,
+      longitude: coin.longitude,
+      serial: coin.serial,
+      collected: coin.collected,
+    })),
+    movementHistory: playerMovementHistory.map((latLng) => ({
+      lat: latLng.lat,
+      lng: latLng.lng,
+    })),
+  };
+
+  // Save the player state to localStorage
+  localStorage.setItem("playerState", JSON.stringify(playerState));
+
+  console.log("Player state saved", playerState);
+}
+
+function loadPlayerState() {
+  const savedPlayerState = localStorage.getItem("playerState");
+  if (savedPlayerState) {
+    const playerState = JSON.parse(savedPlayerState);
+    playerPosition = leaflet.latLng(
+      playerState.position.lat,
+      playerState.position.lng,
+    );
+    playerCoins = playerState.coins.map((coin: Geocoin) => ({
+      latitude: coin.latitude,
+      longitude: coin.longitude,
+      serial: coin.serial,
+      collected: coin.collected,
+      collect: function () {
+        if (!this.collected) {
+          this.collected = true;
+          playerCoins.push(this);
+          playerPoints += 1;
+          eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+        }
+      },
+    }));
+    playerMarker.setLatLng(playerPosition);
+    map.panTo(playerPosition);
+  }
+
+  // Load cache state from localStorage
+  const savedCacheState = localStorage.getItem("cacheState");
+  if (savedCacheState) {
+    const cacheState = JSON.parse(savedCacheState);
+    cacheState.forEach((cache: CacheMemento) => {
+      geocoinFactory.coins[cache.cellKey] = cache.coins;
+      spawnedCaches.add(cache.cellKey);
+    });
+  }
+}
+
+// function clearSavedData() {
+//   localStorage.removeItem("playerState");
+//   localStorage.removeItem("cacheState");
+// }
+
+function updatePlayerMovementHistory() {
+  playerMovementHistory.push(playerPosition);
+  const polyline = leaflet.polyline(playerMovementHistory, { color: "red" })
+    .addTo(map);
+  map.fitBounds(polyline.getBounds()); // Optionally zoom to fit the polyline bounds
+}
+
+eventDispatcher.addEventListener("game-state-changed", savePlayerState);
+
+sensorButton.addEventListener("click", toggleGeolocationTracking);
+
+setInterval(savePlayerState, 100);
+
+loadPlayerState();
 updateStatusPanel();
 spawnRelativeCache();
