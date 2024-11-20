@@ -11,16 +11,18 @@ const TILE_DEGREES = 1e-4; // Smaller step for better precision
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 const MAX_ZOOM = 19;
-
-// Player state
 const playerCoins: Geocoin[] = [];
-let playerPoints = 0;
 
-const eventDispatcher = new EventTarget();
-const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
+let playerPoints = 0;
 let playerPosition = OAKES_CLASSROOM;
 
+const eventDispatcher = new EventTarget();
+
+const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
+
 const cacheStateMemento: { [key: string]: CacheMemento } = {};
+
+const spawnedCaches = new Set<string>();
 
 const map = leaflet.map(document.getElementById("map")!, {
   center: OAKES_CLASSROOM,
@@ -30,6 +32,18 @@ const map = leaflet.map(document.getElementById("map")!, {
   zoomControl: false,
   scrollWheelZoom: false,
 });
+
+leaflet
+  .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: MAX_ZOOM,
+    attribution:
+      '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  })
+  .addTo(map);
+
+const playerMarker = leaflet.marker(OAKES_CLASSROOM);
+playerMarker.bindTooltip("That's you!");
+playerMarker.addTo(map);
 
 interface Cell {
   i: number;
@@ -59,21 +73,6 @@ interface CacheMemento {
   coins: Geocoin[];
 }
 
-eventDispatcher.addEventListener("game-state-changed", updateStatusPanel);
-
-leaflet
-  .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: MAX_ZOOM,
-    attribution:
-      '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  })
-  .addTo(map);
-
-const playerMarker = leaflet.marker(OAKES_CLASSROOM);
-playerMarker.bindTooltip("That's you!");
-playerMarker.addTo(map);
-
-// Utility functions to simplify repetitive code
 const createCell = (i: number, j: number): Cell => ({
   i,
   j,
@@ -84,9 +83,8 @@ const createCell = (i: number, j: number): Cell => ({
   toString: () => `${i}:${j}`,
 });
 
-// Geocoin factory object
 const geocoinFactory: GeocoinFactory = {
-  coins: {}, // Initialize coins as an empty object
+  coins: {},
 
   create(cell: Cell): Geocoin {
     const cellKey = cell.toString();
@@ -135,8 +133,6 @@ const geocoinFactory: GeocoinFactory = {
     this.coins[cellKey].push(coin);
   },
 };
-
-const spawnedCaches = new Set<string>();
 
 function updateStatusPanel() {
   const inventoryText = playerCoins
@@ -220,7 +216,6 @@ function generatePopupContent(cell: Cell, rect: leaflet.Rectangle) {
   return popupDiv;
 }
 
-// Handle coin deposit logic
 function handleCoinDeposit(cell: Cell, rect: leaflet.Rectangle) {
   if (playerCoins.length > 0) {
     const depositedCoin = playerCoins.pop()!;
@@ -303,21 +298,16 @@ function movePlayer(direction: string) {
   }
 }
 
-document.getElementById("north")?.addEventListener(
-  "click",
-  () => movePlayer("north"),
-);
-document.getElementById("south")?.addEventListener(
-  "click",
-  () => movePlayer("south"),
-);
-document.getElementById("east")?.addEventListener(
-  "click",
-  () => movePlayer("east"),
-);
-document.getElementById("west")?.addEventListener(
-  "click",
-  () => movePlayer("west"),
-);
+eventDispatcher.addEventListener("game-state-changed", updateStatusPanel);
+
+const directions = ["north", "south", "east", "west"];
+
+directions.forEach((direction) => {
+  document.getElementById(direction)?.addEventListener(
+    "click",
+    () => movePlayer(direction),
+  );
+});
+
 updateStatusPanel();
 spawnRelativeCache();
