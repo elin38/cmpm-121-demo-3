@@ -263,9 +263,19 @@ function movePlayer(direction: string) {
   }
 }
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "ArrowUp") movePlayer("north");
-  else if (event.key === "ArrowDown") movePlayer("south");
-  else if (event.key === "ArrowRight") movePlayer("east");
-  else if (event.key === "ArrowLeft") movePlayer("west");
-});
+document.getElementById("north")?.addEventListener(
+  "click",
+  () => movePlayer("north"),
+);
+document.getElementById("south")?.addEventListener(
+  "click",
+  () => movePlayer("south"),
+);
+document.getElementById("east")?.addEventListener(
+  "click",
+  () => movePlayer("east"),
+);
+document.getElementById("west")?.addEventListener(
+  "click",
+  () => movePlayer("west"),
+);
