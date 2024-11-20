@@ -18,7 +18,18 @@ let playerPoints = 0;
 
 const eventDispatcher = new EventTarget();
 const statusPanel = document.querySelector<HTMLDivElement>("#statusPanel")!;
-updateStatusPanel();
+let playerPosition = OAKES_CLASSROOM;
+
+const cacheStateMemento: { [key: string]: CacheMemento } = {};
+
+const map = leaflet.map(document.getElementById("map")!, {
+  center: OAKES_CLASSROOM,
+  zoom: GAMEPLAY_ZOOM_LEVEL,
+  minZoom: GAMEPLAY_ZOOM_LEVEL,
+  maxZoom: GAMEPLAY_ZOOM_LEVEL,
+  zoomControl: false,
+  scrollWheelZoom: false,
+});
 
 interface Cell {
   i: number;
@@ -43,31 +54,12 @@ interface GeocoinFactory {
   addCoinToCache(cell: Cell, coin: Geocoin): void;
 }
 
-// Update the status panel with the latest player state
-function updateStatusPanel() {
-  const inventoryText = playerCoins
-    .map((coin) =>
-      `${coin.latitude.toFixed(5)}:${coin.longitude.toFixed(5)}#${coin.serial}`
-    )
-    .join("<br>");
-  const newStatus = `Points: ${playerPoints}<br>Inventory:<br>${inventoryText}`;
-
-  if (statusPanel.innerHTML !== newStatus) {
-    statusPanel.innerHTML = newStatus;
-  }
+interface CacheMemento {
+  cellKey: string;
+  coins: Geocoin[];
 }
 
 eventDispatcher.addEventListener("game-state-changed", updateStatusPanel);
-
-// Map setup
-const map = leaflet.map(document.getElementById("map")!, {
-  center: OAKES_CLASSROOM,
-  zoom: GAMEPLAY_ZOOM_LEVEL,
-  minZoom: GAMEPLAY_ZOOM_LEVEL,
-  maxZoom: GAMEPLAY_ZOOM_LEVEL,
-  zoomControl: false,
-  scrollWheelZoom: false,
-});
 
 leaflet
   .tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -145,6 +137,19 @@ const geocoinFactory: GeocoinFactory = {
 };
 
 const spawnedCaches = new Set<string>();
+
+function updateStatusPanel() {
+  const inventoryText = playerCoins
+    .map((coin) =>
+      `${coin.latitude.toFixed(5)}:${coin.longitude.toFixed(5)}#${coin.serial}`
+    )
+    .join("<br>");
+  const newStatus = `Points: ${playerPoints}<br>Inventory:<br>${inventoryText}`;
+
+  if (statusPanel.innerHTML !== newStatus) {
+    statusPanel.innerHTML = newStatus;
+  }
+}
 
 // Function to spawn caches on the map
 function spawnCache(i: number, j: number) {
@@ -230,17 +235,51 @@ function handleCoinDeposit(cell: Cell, rect: leaflet.Rectangle) {
   }
 }
 
-// Spawn caches around the neighborhood
-for (let i = -NEIGHBORHOOD_SIZE; i < NEIGHBORHOOD_SIZE; i++) {
-  for (let j = -NEIGHBORHOOD_SIZE; j < NEIGHBORHOOD_SIZE; j++) {
-    if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
-      spawnCache(i, j);
-    }
+function saveCacheState(cell: Cell) {
+  const cellKey = cell.toString();
+  const coins = geocoinFactory.getCoins(cell);
+  cacheStateMemento[cellKey] = { cellKey, coins: [...coins] };
+}
+
+function restoreCacheState(cell: Cell): void {
+  const cellKey = cell.toString();
+  if (cacheStateMemento[cellKey]) {
+    const savedState = cacheStateMemento[cellKey];
+    geocoinFactory.coins[cellKey] = savedState.coins;
+    spawnedCaches.add(cellKey);
   }
 }
 
-// Player movement logic
-let playerPosition = OAKES_CLASSROOM;
+function spawnRelativeCache() {
+  const { lat: playerLat, lng: playerLng } = playerPosition;
+  const playerI = Math.round((playerLat - OAKES_CLASSROOM.lat) / TILE_DEGREES);
+  const playerJ = Math.round((playerLng - OAKES_CLASSROOM.lng) / TILE_DEGREES);
+
+  spawnedCaches.clear(); // Clear the spawned caches set
+
+  for (
+    let i = playerI - NEIGHBORHOOD_SIZE;
+    i <= playerI + NEIGHBORHOOD_SIZE;
+    i++
+  ) {
+    for (
+      let j = playerJ - NEIGHBORHOOD_SIZE;
+      j <= playerJ + NEIGHBORHOOD_SIZE;
+      j++
+    ) {
+      const cell = createCell(i, j);
+      const cellKey = cell.toString();
+
+      // Check if the cache exists in Memento
+      if (cacheStateMemento[cellKey]) {
+        restoreCacheState(cell);
+      } else if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
+        spawnCache(i, j);
+        saveCacheState(cell);
+      }
+    }
+  }
+}
 
 function movePlayer(direction: string) {
   const movement: { [key: string]: leaflet.LatLng } = {
@@ -260,6 +299,7 @@ function movePlayer(direction: string) {
     playerPosition = movement[direction];
     playerMarker.setLatLng(playerPosition);
     map.panTo(playerPosition);
+    spawnRelativeCache();
   }
 }
 
@@ -279,3 +319,5 @@ document.getElementById("west")?.addEventListener(
   "click",
   () => movePlayer("west"),
 );
+updateStatusPanel();
+spawnRelativeCache();
