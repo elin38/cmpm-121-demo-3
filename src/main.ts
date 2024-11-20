@@ -7,7 +7,7 @@ import luck from "./luck.ts";
 // Constants
 const OAKES_CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
 const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_DEGREES = 1e-4; // Smaller step for better precision
+const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 const MAX_ZOOM = 19;
@@ -28,6 +28,7 @@ const cacheStateMemento: { [key: string]: CacheMemento } = {};
 
 const spawnedCaches = new Set<string>();
 const sensorButton = document.getElementById("sensor")!;
+const resetButton = document.getElementById("reset")!;
 
 const map = leaflet.map(document.getElementById("map")!, {
   center: OAKES_CLASSROOM,
@@ -420,10 +421,37 @@ function loadPlayerState() {
   }
 }
 
-// function clearSavedData() {
-//   localStorage.removeItem("playerState");
-//   localStorage.removeItem("cacheState");
-// }
+function resetGameState() {
+  const userConfirmation = prompt(
+    "Are you sure you want to erase your game state? (Yes/No)",
+  );
+
+  if (userConfirmation?.toLowerCase() === "yes") {
+    playerCoins.forEach((coin) => {
+      coin.collected = false;
+      const originalCell = createCell(coin.latitude, coin.longitude);
+      geocoinFactory.addCoinToCache(originalCell, coin);
+    });
+
+    playerPosition = OAKES_CLASSROOM;
+    playerCoins = [];
+    playerPoints = 0;
+    playerMovementHistory.length = 0;
+    spawnedCaches.clear();
+    Object.keys(cacheStateMemento).forEach((key) =>
+      delete cacheStateMemento[key]
+    );
+
+    localStorage.removeItem("playerState");
+    localStorage.removeItem("cacheState");
+
+    updateStatusPanel();
+
+    alert("Game state has been reset!");
+  } else {
+    alert("Game state reset cancelled.");
+  }
+}
 
 function updatePlayerMovementHistory() {
   playerMovementHistory.push(playerPosition);
@@ -435,6 +463,8 @@ function updatePlayerMovementHistory() {
 eventDispatcher.addEventListener("game-state-changed", savePlayerState);
 
 sensorButton.addEventListener("click", toggleGeolocationTracking);
+
+resetButton.addEventListener("click", resetGameState);
 
 setInterval(savePlayerState, 100);
 
