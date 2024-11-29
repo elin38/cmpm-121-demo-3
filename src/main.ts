@@ -11,12 +11,10 @@ const TILE_DEGREES = 1e-4;
 const NEIGHBORHOOD_SIZE = 8;
 const CACHE_SPAWN_PROBABILITY = 0.1;
 const MAX_ZOOM = 19;
-let playerCoins: Geocoin[] = [];
 
-const playerMovementHistory: leaflet.LatLng[] = [];
+// const playerMovementHistory: leaflet.LatLng[] = [];
 
-let playerPoints = 0;
-let playerPosition = OAKES_CLASSROOM;
+// let playerPosition = OAKES_CLASSROOM;
 let isGeolocationActive = false;
 let watchId: number | null = null;
 
@@ -79,6 +77,87 @@ interface CacheMemento {
   coins: Geocoin[];
 }
 
+class GameStateManager {
+  private playerCoins: Geocoin[] = [];
+
+  private playerPoints: number = 0;
+
+  private playerPosition: leaflet.LatLng = OAKES_CLASSROOM;
+
+  private movementHistory: leaflet.LatLng[] = [];
+
+  private eventDispatcher: EventTarget;
+
+  constructor(eventDispatcher: EventTarget) {
+    this.eventDispatcher = eventDispatcher;
+  }
+
+  onCoinCollected(coin: Geocoin): void {
+    this.playerCoins.push(coin);
+
+    this.playerPoints += 1;
+
+    this.eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+  }
+
+  onCoinDeposited(coin: Geocoin): void {
+    const index = this.playerCoins.indexOf(coin);
+    if (index !== -1) {
+      this.playerCoins.splice(index, 1);
+    }
+
+    this.playerPoints -= 1;
+
+    this.eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+  }
+
+  getPlayerCoins(): Geocoin[] {
+    return [...this.playerCoins];
+  }
+
+  // Returns the player's current points
+  getPlayerPoints(): number {
+    return this.playerPoints;
+  }
+
+  private listeners: (() => void)[] = [];
+
+  addListener(listener: () => void): void {
+    this.listeners.push(listener);
+  }
+
+  notifyListeners(): void {
+    this.listeners.forEach((listener) => listener());
+  }
+
+  updatePlayerPosition(newPosition: leaflet.LatLng): void {
+    this.playerPosition = newPosition;
+    this.movementHistory.push(newPosition);
+    this.notifyListeners();
+  }
+
+  getPlayerPosition(): leaflet.LatLng {
+    return this.playerPosition;
+  }
+
+  getPlayerMovementHistory(): leaflet.LatLng[] {
+    return [...this.movementHistory];
+  }
+
+  resetPlayer(): void {
+    this.playerCoins = [];
+
+    this.playerPoints = 0;
+
+    this.playerPosition = OAKES_CLASSROOM;
+
+    this.movementHistory = [];
+  }
+}
+
+const gameStateManager = new GameStateManager(eventDispatcher);
+gameStateManager.addListener(updateStatusPanel);
+
 const createCell = (i: number, j: number): Cell => ({
   i,
   j,
@@ -105,13 +184,12 @@ const geocoinFactory: GeocoinFactory = {
       collect: function () {
         if (!this.collected) {
           this.collected = true;
-          playerCoins.push(this);
-          playerPoints += 1;
-          eventDispatcher.dispatchEvent(new Event("game-state-changed"));
+          gameStateManager.onCoinCollected(this); // Call onCoinCollected directly
         }
       },
     };
 
+    // Ensure cell key is initialized
     if (!this.coins[cellKey]) {
       this.coins[cellKey] = [];
     }
@@ -141,12 +219,13 @@ const geocoinFactory: GeocoinFactory = {
 };
 
 function updateStatusPanel() {
-  const inventoryText = playerCoins
+  const inventoryText = gameStateManager.getPlayerCoins()
     .map((coin) =>
       `${coin.latitude.toFixed(5)}:${coin.longitude.toFixed(5)}#${coin.serial}`
     )
     .join("<br>");
-  const newStatus = `Points: ${playerPoints}<br>Inventory:<br>${inventoryText}`;
+  const newStatus =
+    `Points: ${gameStateManager.getPlayerPoints()}<br>Inventory:<br>${inventoryText}`;
 
   if (statusPanel.innerHTML !== newStatus) {
     statusPanel.innerHTML = newStatus;
@@ -179,7 +258,7 @@ function generatePopupContent(cell: Cell, rect: leaflet.Rectangle) {
     const coinCount =
       Math.floor(luck([cell.i, cell.j, "coinCount"].toString()) * 10) + 1;
     for (let c = 0; c < coinCount; c++) {
-      geocoinFactory.create(cell);
+      geocoinFactory.create(cell); // Create the coin without collecting it
     }
     spawnedCaches.add(cellKey);
     eventDispatcher.dispatchEvent(new Event("game-state-changed"));
@@ -206,8 +285,9 @@ function generatePopupContent(cell: Cell, rect: leaflet.Rectangle) {
       `;
       const collectButton = coinDiv.querySelector(`#collect-${index}`)!;
       collectButton.addEventListener("click", () => {
-        coin.collect();
+        coin.collect(); // Directly call the collect method
         coinDiv.innerHTML = ``;
+        updateStatusPanel();
       });
     }
     popupDiv.appendChild(coinDiv);
@@ -223,10 +303,11 @@ function generatePopupContent(cell: Cell, rect: leaflet.Rectangle) {
 }
 
 function handleCoinDeposit(cell: Cell, rect: leaflet.Rectangle) {
-  if (playerCoins.length > 0) {
-    const depositedCoin = playerCoins.pop()!;
+  if (gameStateManager.getPlayerCoins().length > 0) {
+    const depositedCoin = gameStateManager.getPlayerCoins().pop()!;
     depositedCoin.collected = false;
-    playerPoints -= 1;
+    gameStateManager.onCoinDeposited(depositedCoin); // Notify GameStateManager
+
     geocoinFactory.removeCoin(cell, depositedCoin);
     geocoinFactory.addCoinToCache(cell, depositedCoin);
     eventDispatcher.dispatchEvent(new Event("game-state-changed"));
@@ -252,7 +333,8 @@ function restoreCacheState(cell: Cell): void {
 }
 
 function spawnRelativeCache() {
-  const { lat: playerLat, lng: playerLng } = playerPosition;
+  const { lat: playerLat, lng: playerLng } = gameStateManager
+    .getPlayerPosition();
   const playerI = Math.round((playerLat - OAKES_CLASSROOM.lat) / TILE_DEGREES);
   const playerJ = Math.round((playerLng - OAKES_CLASSROOM.lng) / TILE_DEGREES);
 
@@ -285,21 +367,27 @@ function spawnRelativeCache() {
 function movePlayer(direction: string) {
   const movement: { [key: string]: leaflet.LatLng } = {
     north: leaflet.latLng(
-      playerPosition.lat + TILE_DEGREES,
-      playerPosition.lng,
+      gameStateManager.getPlayerPosition().lat + TILE_DEGREES,
+      gameStateManager.getPlayerPosition().lng,
     ),
     south: leaflet.latLng(
-      playerPosition.lat - TILE_DEGREES,
-      playerPosition.lng,
+      gameStateManager.getPlayerPosition().lat - TILE_DEGREES,
+      gameStateManager.getPlayerPosition().lng,
     ),
-    east: leaflet.latLng(playerPosition.lat, playerPosition.lng + TILE_DEGREES),
-    west: leaflet.latLng(playerPosition.lat, playerPosition.lng - TILE_DEGREES),
+    east: leaflet.latLng(
+      gameStateManager.getPlayerPosition().lat,
+      gameStateManager.getPlayerPosition().lng + TILE_DEGREES,
+    ),
+    west: leaflet.latLng(
+      gameStateManager.getPlayerPosition().lat,
+      gameStateManager.getPlayerPosition().lng - TILE_DEGREES,
+    ),
   };
 
   if (movement[direction]) {
-    playerPosition = movement[direction];
-    playerMarker.setLatLng(playerPosition);
-    map.panTo(playerPosition);
+    gameStateManager.updatePlayerPosition(movement[direction]);
+    playerMarker.setLatLng(gameStateManager.getPlayerPosition());
+    map.panTo(gameStateManager.getPlayerPosition());
     spawnRelativeCache();
     updatePlayerMovementHistory(); // Update the movement history
   }
@@ -319,9 +407,9 @@ directions.forEach((direction) => {
 function updatePlayerPositionFromGeolocation(position: GeolocationPosition) {
   const { latitude, longitude } = position.coords;
 
-  playerPosition = leaflet.latLng(latitude, longitude);
-  playerMarker.setLatLng(playerPosition);
-  map.panTo(playerPosition);
+  gameStateManager.updatePlayerPosition(leaflet.latLng(latitude, longitude));
+  playerMarker.setLatLng(gameStateManager.getPlayerPosition());
+  map.panTo(gameStateManager.getPlayerPosition());
 
   spawnRelativeCache();
 }
@@ -365,14 +453,19 @@ function toggleGeolocationTracking() {
 
 function savePlayerState() {
   const playerState = {
-    position: { lat: playerPosition.lat, lng: playerPosition.lng },
-    coins: playerCoins.map((coin) => ({
+    position: {
+      lat: gameStateManager.getPlayerPosition().lat,
+      lng: gameStateManager.getPlayerPosition().lng,
+    },
+    coins: gameStateManager.getPlayerCoins().map((coin) => ({
       latitude: coin.latitude,
       longitude: coin.longitude,
       serial: coin.serial,
       collected: coin.collected,
     })),
-    movementHistory: playerMovementHistory.map((latLng) => ({
+    movementHistory: gameStateManager.getPlayerMovementHistory().map((
+      latLng,
+    ) => ({
       lat: latLng.lat,
       lng: latLng.lng,
     })),
@@ -388,26 +481,30 @@ function loadPlayerState() {
   const savedPlayerState = localStorage.getItem("playerState");
   if (savedPlayerState) {
     const playerState = JSON.parse(savedPlayerState);
-    playerPosition = leaflet.latLng(
+    gameStateManager.updatePlayerPosition(leaflet.latLng(
       playerState.position.lat,
       playerState.position.lng,
-    );
-    playerCoins = playerState.coins.map((coin: Geocoin) => ({
-      latitude: coin.latitude,
-      longitude: coin.longitude,
-      serial: coin.serial,
-      collected: coin.collected,
-      collect: function () {
-        if (!this.collected) {
-          this.collected = true;
-          playerCoins.push(this);
-          playerPoints += 1;
-          eventDispatcher.dispatchEvent(new Event("game-state-changed"));
-        }
-      },
-    }));
-    playerMarker.setLatLng(playerPosition);
-    map.panTo(playerPosition);
+    ));
+    playerState.coins.forEach((coin: Geocoin) => {
+      const geocoin = {
+        latitude: coin.latitude,
+        longitude: coin.longitude,
+        serial: coin.serial,
+        collected: coin.collected,
+        collect: function () {
+          if (!this.collected) {
+            this.collected = true;
+            gameStateManager.onCoinCollected(this); // Call onCoinCollected directly
+          }
+        },
+      };
+      // Use GameStateManager to add the coin to the player's inventory
+      if (coin.collected) {
+        gameStateManager.onCoinCollected(geocoin);
+      }
+    });
+    playerMarker.setLatLng(gameStateManager.getPlayerPosition());
+    map.panTo(gameStateManager.getPlayerPosition());
   }
 
   // Load cache state from localStorage
@@ -427,16 +524,13 @@ function resetGameState() {
   );
 
   if (userConfirmation?.toLowerCase() === "yes") {
-    playerCoins.forEach((coin) => {
+    gameStateManager.getPlayerCoins().forEach((coin) => {
       coin.collected = false;
       const originalCell = createCell(coin.latitude, coin.longitude);
       geocoinFactory.addCoinToCache(originalCell, coin);
     });
+    gameStateManager.resetPlayer(); // Reset points and UI notifications
 
-    playerPosition = OAKES_CLASSROOM;
-    playerCoins = [];
-    playerPoints = 0;
-    playerMovementHistory.length = 0;
     spawnedCaches.clear();
     Object.keys(cacheStateMemento).forEach((key) =>
       delete cacheStateMemento[key]
@@ -454,8 +548,10 @@ function resetGameState() {
 }
 
 function updatePlayerMovementHistory() {
-  playerMovementHistory.push(playerPosition);
-  const polyline = leaflet.polyline(playerMovementHistory, { color: "red" })
+  const polyline = leaflet.polyline(
+    gameStateManager.getPlayerMovementHistory(),
+    { color: "red" },
+  )
     .addTo(map);
   map.fitBounds(polyline.getBounds()); // Optionally zoom to fit the polyline bounds
 }
